@@ -1,0 +1,632 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>hybridx_apply.py 要定义的参数</title>
+<style>
+  :root {
+    color-scheme: light;
+    --ink: #1c1b19;
+    --muted: #5c5852;
+    --line: #ddd8d0;
+    --paper: #f6f4ef;
+    --card: #fffcf7;
+    --accent: #1f4b6e;
+    --solve: #1f4b6e;
+    --keep: #6a5a3a;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    color: var(--ink);
+    background: var(--paper);
+    font: 16px/1.55 "Microsoft YaHei", "Segoe UI", sans-serif;
+  }
+  a { color: var(--accent); }
+  header, main { max-width: 1080px; margin: 0 auto; padding: 28px 24px; }
+  header { padding-bottom: 8px; }
+  h1 { font-size: 28px; font-weight: 600; line-height: 1.25; margin: 0 0 8px; }
+  h2 { font-size: 22px; font-weight: 600; margin: 36px 0 8px; scroll-margin-top: 16px; }
+  h3 { font-size: 17px; font-weight: 600; margin: 22px 0 6px; }
+  p { margin: 8px 0; }
+  .lead { color: var(--muted); max-width: 68ch; }
+  nav {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px 14px;
+    margin: 16px 0 8px;
+    padding-bottom: 12px;
+    border-bottom: 1px solid var(--line);
+  }
+  nav a { text-decoration: none; }
+  nav a:hover { text-decoration: underline; }
+  code, .num { font-family: Consolas, "Cascadia Mono", monospace; font-size: 0.92em; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--card);
+    margin: 10px 0 18px;
+    font-size: 14px;
+  }
+  th, td {
+    text-align: left;
+    vertical-align: top;
+    padding: 7px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  th { font-weight: 600; background: #efeae2; }
+  .tag {
+    display: inline-block;
+    margin: 0 4px 2px 0;
+    padding: 0 6px;
+    border: 1px solid var(--line);
+    font-size: 12px;
+    line-height: 1.6;
+    white-space: nowrap;
+  }
+  .tag.solve { color: var(--solve); border-color: #b7c9d6; }
+  .tag.keep { color: var(--keep); border-color: #ddd2bc; }
+  .note {
+    border-left: 3px solid var(--accent);
+    padding: 4px 0 4px 12px;
+    margin: 12px 0;
+  }
+  section { margin-bottom: 12px; }
+  ul { margin: 8px 0; padding-left: 1.2em; }
+  li { margin: 4px 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>hybridx_apply.py 要定义的参数</h1>
+  <p class="lead">场景现在只填八张表：落点、机器人、能力、动作、设施、通信、任务、生成图，外加一个随机种子。前置、后置和执行图由 <code>compile_case</code> 按任务类型生成。下面仍是这些表展开之后每个字段的含义和当前取值。单位是米；表里的朝向用度，装配时换成弧度。电量、装载量、能力和可靠性都在 0 到 1。</p>
+  <nav>
+    <a href="#read">怎么读</a>
+    <a href="#names">名字对齐</a>
+    <a href="#sites">落点</a>
+    <a href="#robots">机器人</a>
+    <a href="#env">环境</a>
+    <a href="#actions">动作</a>
+    <a href="#facility">设施与通信</a>
+    <a href="#tasks">任务</a>
+    <a href="#operad">生成图</a>
+    <a href="#translation">翻译</a>
+    <a href="#solver">求解</a>
+  </nav>
+</header>
+<main>
+
+<section id="read">
+  <h2>怎么读这些标记</h2>
+  <p><span class="tag solve">求解</span>会改变方案、行程或可行性。<span class="tag keep">记录</span>写在对象上，当前 <code>TaskSolver.solve</code> 不读取；打印、设施计算或以后的可靠性计算才会用到。</p>
+  <table>
+    <thead><tr><th>标记</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><span class="tag solve">求解</span></td><td>参与分配、接近移动、前置检查或后置写入。</td></tr>
+      <tr><td><span class="tag keep">记录</span></td><td>必须能写成合法对象，但当前求的是行程，不看这个数。</td></tr>
+      <tr><td><span class="tag keep">设施计算</span></td><td><code>segment_effect</code> 或 <code>comm_effect</code> 读取。求解主过程不读。</td></tr>
+      <tr><td><span class="tag keep">翻译</span></td><td>只进入执行图。求解使用的是任务节点和生成图。</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p>应用文件是具体场景。类型和算法在 <code>hybridx.py</code>。0.1、0.2 的乘积、并行可靠性和增益公式不在应用文件里填数；应用文件提供设施、距离和链路，<code>__main__</code> 再调用那些公式。</p>
+  </div>
+</section>
+
+<section id="names">
+  <h2>必须互相对上的名字</h2>
+  <p>这些字符串分散在不同节。对不上时，对象要么构造失败，要么求解把能力当成 0，要么依赖找不到。</p>
+  <table>
+    <thead><tr><th>名字</th><th>出现位置</th><th>当前约定</th></tr></thead>
+    <tbody>
+      <tr>
+        <td>任务类型 <code>ttype</code></td>
+        <td>任务、<code>Robot.capability</code> 的键、基元列表、翻译</td>
+        <td>能力字典的键必须等于任务类型。缺键按 0 处理，机器人不能做这件任务。</td>
+      </tr>
+      <tr>
+        <td>角色键</td>
+        <td><code>RobotRole</code>、前置 <code>who</code>、后置 <code>('robot', 键)</code></td>
+        <td>无槽时就是机型，如 <code>arm</code>、<code>transport</code>。有槽时是 <code>transport:1</code>。同一任务里键不能重复。</td>
+      </tr>
+      <tr>
+        <td>任务编号 <code>tid</code></td>
+        <td>任务字典的键、<code>Dependency(ref, 'id')</code></td>
+        <td>如 <code>T_load_A</code>。依赖按编号指向时，这个编号必须出现在生成图展开后的节点里。</td>
+      </tr>
+      <tr>
+        <td>落点名</td>
+        <td><code>Facility.sites</code>、<code>segment_effect</code> 的两端</td>
+        <td><code>pit_a</code>、<code>pit_b</code>、<code>gate</code>、<code>stack</code>。它们是名字，不会自动等于坐标常量。</td>
+      </tr>
+      <tr>
+        <td>栅格键</td>
+        <td><code>env.mat</code>、<code>env.occ</code>、放置的环境效果</td>
+        <td>字符串 <code>'x,y,z'</code>。当前 z 都是 0，例如建造点是 <code>'2,2,0'</code>。坐标元组 <code>(2.0, 2.0)</code> 不会自动写成这个键。</td>
+      </tr>
+      <tr>
+        <td>机型</td>
+        <td><code>Robot.rtype</code>、角色、<code>ActBuilder.seq</code> 的第一条参数</td>
+        <td>只有 <code>transport</code> 和 <code>arm</code>。翻译图里的机型集合必须等于该任务角色的机型集合；槽不参与这个比较，两台运输车仍共用一条运输车动作。</td>
+      </tr>
+      <tr>
+        <td>移动词</td>
+        <td>生成图 <code>steps</code></td>
+        <td><code>move</code>、<code>move_ang</code>、<code>deliver</code>、<code>nav</code>、<code>roadtrans</code>。它们写在步骤里，存图时删除，不能登记成基元，也不能做生成图的名字。</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="sites">
+  <h2>落点</h2>
+  <p>五个坐标是后面位置效果和里程示例的来源。移动不建成任务，求解用后一个任务的 <code>pos</code> 减去机器人当前坐标来算路程。</p>
+  <table>
+    <thead><tr><th>常量</th><th>当前值 (m)</th><th>落点名</th><th>栅格键</th><th>作用</th></tr></thead>
+    <tbody>
+      <tr><td><code>PIT_A</code></td><td class="num">(40.0, 58.0)</td><td><code>pit_a</code></td><td><code>40,58,0</code></td><td><span class="tag solve">求解</span>A 的挖掘和装载结束位置。采集区，靠近 (50, 50)。</td></tr>
+      <tr><td><code>PIT_B</code></td><td class="num">(66.0, 36.0)</td><td><code>pit_b</code></td><td><code>66,36,0</code></td><td><span class="tag solve">求解</span>B 的挖掘和装载结束位置。与 A 相距 34.06 m。</td></tr>
+      <tr><td><code>GATE</code></td><td class="num">(14.0, 6.0)</td><td><code>gate</code></td><td>无</td><td><span class="tag solve">求解</span>A 卸货和再次装载的位置。建造区入口。</td></tr>
+      <tr><td><code>STACK</code></td><td class="num">(2.0, 2.0)</td><td><code>stack</code></td><td><code>2,2,0</code></td><td><span class="tag solve">求解</span>建造点。B 在这里卸载；A、B、C 都在这里放置。</td></tr>
+      <tr><td><code>WAIT_C</code></td><td class="num">(5.0, 3.0)</td><td>无</td><td><code>5,3,0</code></td><td><span class="tag solve">求解</span>C 抓取时机械臂到达的位置。C 一开始就在建造点旁。</td></tr>
+    </tbody>
+  </table>
+  <h3>由坐标算出的路程</h3>
+  <p>这些距离不是单独的参数。<code>t1</code> 的里程和 <code>__main__</code> 里的设施计算都调用 <code>_gap</code>，也就是欧氏距离。</p>
+  <table>
+    <thead><tr><th>线段</th><th>距离 (m)</th><th>在流程里的名字</th></tr></thead>
+    <tbody>
+      <tr><td>PIT_A → GATE</td><td class="num">58.14</td><td>A 的 deliver。装载 A 之后、卸载 A 之前被删掉的那段。</td></tr>
+      <tr><td>GATE → STACK</td><td class="num">12.65</td><td>A 的 nav。再次装载之后、避障卸载之前被删掉的那段。</td></tr>
+      <tr><td>PIT_B → STACK</td><td class="num">72.47</td><td>B 的 deliver。直接落到建造点，没有入口。</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="robots">
+  <h2>机器人</h2>
+  <p>字典 <code>robots</code> 的键是机器人编号。每台机器人是一个 <code>Robot</code>，状态是 <code>TransportRobot</code> 或 <code>ArmRobot</code>。</p>
+  <h3>每台都要填的字段</h3>
+  <table>
+    <thead><tr><th>字段</th><th>类型与范围</th><th>谁在用</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>rid</code></td><td>字符串，字典内唯一</td><td><span class="tag solve">求解</span></td><td>分配结果里的机器人编号。同一任务的不同槽必须分到不同编号。</td></tr>
+      <tr><td><code>rtype</code></td><td><code>transport</code> 或 <code>arm</code></td><td><span class="tag solve">求解</span></td><td>必须和状态类型一致。运输车才能有装载量和里程，机械臂才能有关节和夹爪。</td></tr>
+      <tr><td><code>pos</code></td><td><code>(x, y)</code>，米</td><td><span class="tag solve">求解</span></td><td>初始位置。接近行程从这里算到任务后置位置。</td></tr>
+      <tr><td><code>theta</code></td><td>弧度</td><td><span class="tag keep">记录</span></td><td>朝向。求解的接近移动不改变它。R3 写成 <code>math.radians(90)</code>，数值是 1.5708。</td></tr>
+      <tr><td><code>bat</code></td><td>实数，约定 [0, 1]</td><td><span class="tag solve">求解</span></td><td>初始电量。接近移动按 <code>lam_b × 距离</code> 扣电，任务后置再按 <code>add</code> 扣电。低于前置阈值则该方案失败。电量减到负也会失败。</td></tr>
+      <tr><td><code>belief</code></td><td>字典，默认为空</td><td><span class="tag keep">记录</span></td><td>初始信念。当前前置不读它。后置用 <code>merge</code> 写入。</td></tr>
+      <tr><td><code>capability</code></td><td>字典，任务类型 → [0, 1]</td><td><span class="tag solve">求解</span></td><td>这台车做某类任务的能力。必须大于等于该任务角色上的阈值才合格。相同行程时，搜索更倾向能力高的车。</td></tr>
+      <tr><td><code>r0</code></td><td>[0, 1]，默认 0.99</td><td><span class="tag keep">记录</span></td><td>零距离里程计可靠性。当前文件省略，使用默认。设施计算自己也默认 0.99，不读取机器人上的这个字段。</td></tr>
+      <tr><td><code>lam_r</code></td><td>每米，默认 0.002</td><td><span class="tag keep">记录</span></td><td>里程计随距离衰减的系数。公式是 <code>r0 · exp(-λ · d)</code>。求解不读。</td></tr>
+      <tr><td><code>lam_b</code></td><td>每米，默认 0.0005</td><td><span class="tag solve">求解</span></td><td>接近移动的耗电系数。当前四台都用默认值。</td></tr>
+    </tbody>
+  </table>
+  <h3>运输车额外字段</h3>
+  <table>
+    <thead><tr><th>字段</th><th>类型与范围</th><th>谁在用</th><th>当前</th></tr></thead>
+    <tbody>
+      <tr><td><code>full</code></td><td>[0, 1]，默认 0</td><td><span class="tag solve">求解</span></td><td>0。装载要求 <code>full &lt;= 0</code>，卸载要求 <code>full &gt;= 1</code>。省略时就是空车。</td></tr>
+      <tr><td><code>dis</code></td><td>米，默认 0，不能为负</td><td><span class="tag keep">记录</span></td><td>0。求解接近时会把它加上路程，但优化目标用的是另一份行程累计，不读这个初值。</td></tr>
+    </tbody>
+  </table>
+  <h3>机械臂额外字段</h3>
+  <table>
+    <thead><tr><th>字段</th><th>类型与范围</th><th>谁在用</th><th>当前</th></tr></thead>
+    <tbody>
+      <tr><td><code>ang</code></td><td>三个数的元组，默认 (0, 0, 0)</td><td><span class="tag keep">记录</span></td><td>(0, 0, 0)。求解不摆关节。<code>m1</code> 的示例角在动作字典里。</td></tr>
+      <tr><td><code>grip</code></td><td>0 空，1 夹持，默认 0</td><td><span class="tag keep">记录</span></td><td>0。当前前置不检查夹爪。后置会把它写成 0 或 1。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>R1 运输车</h3>
+  <p><span class="tag solve">求解</span>位置 (0, 0)，朝向 0，电量 1.0。导航能力高于 R2，所以入口到建造点只有它过阈值。</p>
+  <table>
+    <thead><tr><th>任务类型</th><th>能力</th><th>该任务阈值</th><th>是否合格</th></tr></thead>
+    <tbody>
+      <tr><td><code>load_a</code></td><td class="num">0.74</td><td class="num">0.65</td><td>合格，可做双车槽位之一</td></tr>
+      <tr><td><code>unload_a</code></td><td class="num">0.72</td><td class="num">0.65</td><td>合格</td></tr>
+      <tr><td><code>load_nav_a</code></td><td class="num">0.93</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>unload_nav_a</code></td><td class="num">0.92</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>load_b</code></td><td class="num">0.88</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>unload_b</code></td><td class="num">0.86</td><td class="num">0.80</td><td>合格</td></tr>
+    </tbody>
+  </table>
+
+  <h3>R2 运输车</h3>
+  <p><span class="tag solve">求解</span>位置 (3, 1)，朝向 0，电量 1.0。中型转运与 R1 接近，导航低于阈值。</p>
+  <table>
+    <thead><tr><th>任务类型</th><th>能力</th><th>该任务阈值</th><th>是否合格</th></tr></thead>
+    <tbody>
+      <tr><td><code>load_a</code></td><td class="num">0.73</td><td class="num">0.65</td><td>合格，可做双车槽位之一</td></tr>
+      <tr><td><code>unload_a</code></td><td class="num">0.71</td><td class="num">0.65</td><td>合格</td></tr>
+      <tr><td><code>load_nav_a</code></td><td class="num">0.68</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>unload_nav_a</code></td><td class="num">0.66</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>load_b</code></td><td class="num">0.87</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>unload_b</code></td><td class="num">0.85</td><td class="num">0.80</td><td>合格</td></tr>
+    </tbody>
+  </table>
+
+  <h3>R3 机械臂</h3>
+  <p><span class="tag solve">求解</span>位置 (50, 50)，朝向 90°，电量 0.90。擅长大物体。初始在采集区。</p>
+  <table>
+    <thead><tr><th>任务类型</th><th>能力</th><th>阈值</th><th>是否合格</th></tr></thead>
+    <tbody>
+      <tr><td><code>dig_a</code></td><td class="num">0.92</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>load_a</code></td><td class="num">0.90</td><td class="num">0.85</td><td>合格</td></tr>
+      <tr><td><code>unload_a</code></td><td class="num">0.88</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>load_nav_a</code></td><td class="num">0.88</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>unload_nav_a</code></td><td class="num">0.86</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>grasp_a</code></td><td class="num">0.90</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>place_a</code></td><td class="num">0.90</td><td class="num">0.85</td><td>合格</td></tr>
+      <tr><td><code>dig_b</code></td><td class="num">0.84</td><td class="num">0.78</td><td>合格</td></tr>
+      <tr><td><code>load_b</code></td><td class="num">0.82</td><td class="num">0.78</td><td>合格</td></tr>
+      <tr><td><code>unload_b</code></td><td class="num">0.80</td><td class="num">0.78</td><td>合格</td></tr>
+      <tr><td><code>grasp_b</code></td><td class="num">0.76</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>place_b</code></td><td class="num">0.74</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>grasp_c</code></td><td class="num">0.42</td><td class="num">0.85</td><td>不合格</td></tr>
+      <tr><td><code>place_c</code></td><td class="num">0.40</td><td class="num">0.85</td><td>不合格</td></tr>
+    </tbody>
+  </table>
+
+  <h3>R4 机械臂</h3>
+  <p><span class="tag solve">求解</span>位置 (1.5, 4.5)，朝向 0，电量 0.90。擅长小物体。初始在建造区。</p>
+  <table>
+    <thead><tr><th>任务类型</th><th>能力</th><th>阈值</th><th>是否合格</th></tr></thead>
+    <tbody>
+      <tr><td><code>dig_a</code></td><td class="num">0.38</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>load_a</code></td><td class="num">0.40</td><td class="num">0.85</td><td>不合格</td></tr>
+      <tr><td><code>unload_a</code></td><td class="num">0.42</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>load_nav_a</code></td><td class="num">0.44</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>unload_nav_a</code></td><td class="num">0.44</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>grasp_a</code></td><td class="num">0.42</td><td class="num">0.80</td><td>不合格</td></tr>
+      <tr><td><code>place_a</code></td><td class="num">0.40</td><td class="num">0.85</td><td>不合格</td></tr>
+      <tr><td><code>dig_b</code></td><td class="num">0.72</td><td class="num">0.78</td><td>不合格。装载 B 的能力够，挖掘 B 不够。</td></tr>
+      <tr><td><code>load_b</code></td><td class="num">0.80</td><td class="num">0.78</td><td>合格</td></tr>
+      <tr><td><code>unload_b</code></td><td class="num">0.84</td><td class="num">0.78</td><td>合格</td></tr>
+      <tr><td><code>grasp_b</code></td><td class="num">0.88</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>place_b</code></td><td class="num">0.86</td><td class="num">0.80</td><td>合格</td></tr>
+      <tr><td><code>grasp_c</code></td><td class="num">0.93</td><td class="num">0.85</td><td>合格</td></tr>
+      <tr><td><code>place_c</code></td><td class="num">0.94</td><td class="num">0.85</td><td>合格</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="env">
+  <h2>环境</h2>
+  <p><code>EnvState</code> 有三本字典。键是栅格字符串，不是坐标元组。</p>
+  <table>
+    <thead><tr><th>字段</th><th>当前值</th><th>谁在用</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>occ</code></td>
+        <td>空字典</td>
+        <td><span class="tag keep">记录</span></td>
+        <td>占用，0 或 1。放置时后置把 <code>2,2,0</code> 合并为 1。求解的前置不读占用，所以初值不决定可行性。</td>
+      </tr>
+      <tr>
+        <td><code>mat</code></td>
+        <td><code>40,58,0: regolith</code><br><code>66,36,0: regolith</code><br><code>2,2,0: empty</code><br><code>5,3,0: module_C</code></td>
+        <td><span class="tag keep">记录</span></td>
+        <td>材质名是普通字符串。放置 A/B/C 把建造点分别合并为 <code>module_A</code>、<code>module_B</code>、<code>module_C</code>。放置 C 再把 <code>5,3,0</code> 合并为 <code>empty</code>。前置不读材质。</td>
+      </tr>
+      <tr>
+        <td><code>sigma</code></td>
+        <td>空字典</td>
+        <td><span class="tag keep">记录</span></td>
+        <td>结构化程度。类型注释里它用来选择感知方式。当前设施是否盖住一段路，看的是 <code>sites</code>，不看这本字典。</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="actions">
+  <h2>动作</h2>
+  <p>字典 <code>actions</code> 给出每一种态射的一个具体数。求解不读取这本字典。翻译里写的是代号 <code>m1</code>、<code>t2</code>，不是 <code>m1_reach</code> 这种名字。执行图里每个非 <code>a1</code> 的动作还会自动分叉出一个 <code>a1</code>。</p>
+  <table>
+    <thead><tr><th>名字</th><th>构造</th><th>参数</th><th>约束</th><th>当前值</th></tr></thead>
+    <tbody>
+      <tr><td><code>a1_cost</code></td><td><code>A1</code></td><td><code>bat_decline_num</code>，电量下降量</td><td>≥ 0；下降后电量不能为负</td><td class="num">0.02</td></tr>
+      <tr><td><code>a2_to_pit_a</code></td><td><code>A2</code></td><td><code>src</code>、<code>dst</code>，各是 (x, y)</td><td>执行时机器人必须已经在 src</td><td class="num">(0, 0) → PIT_A</td></tr>
+      <tr><td><code>a2_into_zone</code></td><td><code>A2</code></td><td>同上</td><td>同上</td><td class="num">PIT_A → GATE</td></tr>
+      <tr><td><code>a2_nav_stack</code></td><td><code>A2</code></td><td>同上</td><td>同上</td><td class="num">GATE → STACK</td></tr>
+      <tr><td><code>a2_direct_b</code></td><td><code>A2</code></td><td>同上</td><td>同上</td><td class="num">PIT_B → STACK</td></tr>
+      <tr><td><code>a3_belief</code></td><td><code>A3</code></td><td><code>content</code> 字典</td><td>可空。执行时并入机器人信念</td><td><code>{'road': 'clear'}</code></td></tr>
+      <tr><td><code>m1_reach</code></td><td><code>M1</code></td><td><code>src_angle</code>、<code>dst_angle</code></td><td>维数相同且非空。当前是 3 维。执行时关节必须等于 src</td><td class="num">(0, 0, 0) → (0.4, 0.2, -0.1)</td></tr>
+      <tr><td><code>m1_pick</code></td><td><code>M1</code></td><td>同上</td><td>同上</td><td class="num">(0.4, 0.2, -0.1) → (0.6, 0.3, 0)</td></tr>
+      <tr><td><code>m2_grasp</code></td><td><code>M2</code></td><td><code>act</code></td><td>只能是 <code>grasp</code> 或 <code>release</code></td><td><code>grasp</code>，夹爪变为 1</td></tr>
+      <tr><td><code>m2_release</code></td><td><code>M2</code></td><td>同上</td><td>同上</td><td><code>release</code>，夹爪变为 0</td></tr>
+      <tr><td><code>t1_road_a</code></td><td><code>T1</code></td><td><code>dis_delta_num</code>，里程增量</td><td>≥ 0。文件注释写明求解不读这个数</td><td class="num">58.14</td></tr>
+      <tr><td><code>t1_nav_a</code></td><td><code>T1</code></td><td>同上</td><td>同上</td><td class="num">12.65</td></tr>
+      <tr><td><code>t1_road_b</code></td><td><code>T1</code></td><td>同上</td><td>同上</td><td class="num">72.47</td></tr>
+      <tr><td><code>t2_load</code></td><td><code>T2</code></td><td><code>load_num</code>，装载增量</td><td>加上后装载量必须落在 [0, 1]</td><td class="num">+1.0</td></tr>
+      <tr><td><code>t2_unload</code></td><td><code>T2</code></td><td>同上</td><td>同上</td><td class="num">-1.0</td></tr>
+    </tbody>
+  </table>
+  <p>机械臂能出现在执行图里的代号：<code>a1 a2 a3 m1 m2</code>。运输车：<code>a1 a2 a3 t1 t2</code>。</p>
+</section>
+
+<section id="facility">
+  <h2>设施与通信</h2>
+  <p>二者都不是任务节点。定位设施挂在被删掉的移动段上，通信挂在多车同时在场的任务上。求解分配和行程都不读它们。<code>__main__</code> 用 0.2 的函数计算段可靠性和链路是否闭合。</p>
+  <h3>Facility</h3>
+  <table>
+    <thead><tr><th>字段</th><th>约束</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td>字符串</td><td>失效时用这个名字从通路里删掉它。</td></tr>
+      <tr><td><code>sites</code></td><td>至少两个不同的落点名</td><td>一段移动的两端都在其中，这条设施才覆盖该段。<span class="tag keep">设施计算</span></td></tr>
+      <tr><td><code>reliability</code></td><td>[0, 1]</td><td>这条感知通路本身的成功率。和里程计并联：<code>1 - ∏(1 - r)</code>。</td></tr>
+      <tr><td><code>kind</code></td><td><code>camera</code>、<code>uwb</code> 或 <code>tag</code>，默认 camera</td><td>只说明种类。计算不用它区分公式。</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>名字</th><th>种类</th><th>覆盖</th><th>可靠性</th><th>作用到的段</th></tr></thead>
+    <tbody>
+      <tr><td><code>cam_yard</code></td><td>camera 相机</td><td><code>gate</code>、<code>stack</code></td><td class="num">0.85</td><td>GATE → STACK。里程计 0.965，并联后 0.995，增益 0.030。</td></tr>
+      <tr><td><code>uwb_pit</code></td><td>uwb 锚点</td><td><code>pit_a</code>、<code>pit_b</code>、<code>gate</code></td><td class="num">0.80</td><td>PIT_A → GATE。里程计 0.881，并联后 0.976，增益 0.095。不包含 <code>stack</code>，所以 PIT_B → STACK 仍只有里程计 0.856。</td></tr>
+    </tbody>
+  </table>
+  <h3>CommLink</h3>
+  <table>
+    <thead><tr><th>字段</th><th>约束</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>name</code></td><td>字符串</td><td>失效名单里用这个名字。</td></tr>
+      <tr><td><code>reliability</code></td><td>[0, 1]</td><td>这条通信通路的成功率。<span class="tag keep">设施计算</span></td></tr>
+      <tr><td><code>min_crew</code></td><td>整数 ≥ 2，默认 2</td><td>至少这么多台机器人同时在场，这条链路才算数。当前两条都用默认 2。</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>名字</th><th>可靠性</th><th>同时在场</th><th>合在一起时</th></tr></thead>
+    <tbody>
+      <tr><td><code>wireless</code></td><td class="num">0.90</td><td>至少 2 台</td><td rowspan="2">3 台协同时并联可靠性 0.975。只剩视觉是 0.750。两条都失效则交换图断开，可靠性 0。单台任务不需要通信。</td></tr>
+      <tr><td><code>visual</code></td><td class="num">0.75</td><td>至少 2 台</td></tr>
+    </tbody>
+  </table>
+  <p>里程计基准用的是函数默认 <code>r0 = 0.99</code>、<code>λ = 0.002</code>，与机器人默认相同。调用时没有把某台机器人的 <code>r0</code>、<code>lam_r</code> 传进去。</p>
+</section>
+
+<section id="tasks">
+  <h2>任务</h2>
+  <p>字典 <code>tasks</code> 的每一项是一个 <code>TaskNode</code>。求解展开 <code>build</code> 之后，按这些节点分配机器人、检查前置、写入后置，并把后置位置当作接近目标。</p>
+  <p>三个可靠性常数：大物体 <code>_LOW = 0.82</code>，中型 <code>_MID = 0.96</code>，小型 <code>_SMALL = 0.97</code>。<span class="tag keep">记录</span>它们写在节点上并会打印。当前求解优化的是行程，不把步骤可靠性放进目标。</p>
+
+  <h3>任务节点的字段</h3>
+  <table>
+    <thead><tr><th>字段</th><th>谁在用</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>tid</code></td><td><span class="tag solve">求解</span></td><td>任务编号。按 id 依赖时用它。</td></tr>
+      <tr><td><code>ttype</code></td><td><span class="tag solve">求解</span></td><td>任务类型。能力字典、基元和翻译都用它。</td></tr>
+      <tr><td><code>roles</code></td><td><span class="tag solve">求解</span></td><td>角色列表。每项是机型、能力阈值、可选槽。</td></tr>
+      <tr><td><code>pre</code></td><td><span class="tag solve">求解</span></td><td>前置。接近移动之后检查，不过则方案失败。</td></tr>
+      <tr><td><code>post</code></td><td><span class="tag solve">求解</span></td><td>后置。其中 <code>pos</code> 决定行程，其余写入状态。</td></tr>
+      <tr><td><code>deps</code></td><td><span class="tag solve">求解</span></td><td>任务偏序。生成图的边之外，再要求这些前驱先完成。放置 B 依赖放置 A，放置 C 依赖放置 B，垒放顺序靠这里。</td></tr>
+      <tr><td><code>reliability</code></td><td><span class="tag keep">记录</span></td><td>[0, 1]，默认 1。当前不进入行程优化。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>角色 RobotRole</h3>
+  <table>
+    <thead><tr><th>字段</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>rtype</code></td><td><code>transport</code> 或 <code>arm</code>。</td></tr>
+      <tr><td><code>capability</code></td><td>[0, 1]。角色阈值。机器人在该 <code>ttype</code> 上的能力必须大于等于它。</td></tr>
+      <tr><td><code>slot</code></td><td>默认空字符串。空则角色键等于机型。装载 A、卸载 A 用 <code>'1'</code> 和 <code>'2'</code>，键变成 <code>transport:1</code>、<code>transport:2</code>，从而要求两台不同的运输车。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>前置 PreCondition</h3>
+  <p><code>who</code> 里的名字必须是本任务的角色键。一项或两项。<code>op</code> 只能是 <code>&lt; &lt;= &gt; &gt;= ==</code>。<code>value</code> 必须是数，不能写坐标。</p>
+  <table>
+    <thead><tr><th>写法</th><th>求解怎么读</th></tr></thead>
+    <tbody>
+      <tr><td>一个角色，<code>key</code> 为 <code>bat</code>、<code>full</code>、<code>grip</code>、<code>theta</code>、<code>dis</code></td><td>读该机器人状态上的同名数。</td></tr>
+      <tr><td>两个角色，<code>key='dist'</code></td><td>读两台车当前位置的欧氏距离。若比较是 <code>&lt;</code> 或 <code>&lt;=</code> 且尚未满足，两台车先走到中点，这段也计入行程。</td></tr>
+    </tbody>
+  </table>
+
+  <h3>后置 PostEffect</h3>
+  <table>
+    <thead><tr><th>字段</th><th>取值</th></tr></thead>
+    <tbody>
+      <tr><td><code>target</code></td><td><code>('robot', 角色键)</code> 或 <code>('env',)</code>。</td></tr>
+      <tr><td><code>key</code></td><td>机器人侧常用 <code>pos</code>、<code>grip</code>、<code>bat</code>、<code>full</code>、<code>belief</code>。环境侧常用 <code>mat</code>、<code>occ</code>。</td></tr>
+      <tr><td><code>value</code></td><td><code>pos</code> 是 (x, y)。<code>bat</code> 的增量是负数。<code>full</code> 写成 0 或 1。<code>grip</code> 写成 0 或 1。<code>belief</code>、<code>mat</code>、<code>occ</code> 是字典。</td></tr>
+      <tr><td><code>mode</code></td><td><code>set</code> 覆盖，默认。<code>add</code> 累加，用于电量。<code>merge</code> 合并字典，用于信念、材质、占用。</td></tr>
+    </tbody>
+  </table>
+  <p><code>_pos(who, point)</code> 是简写，等于 <code>PostEffect(('robot', who), 'pos', point)</code>，模式为覆盖。参与任务的每台机器人都写了位置，求解才会把这台车开到该点。</p>
+
+  <h3>依赖 Dependency</h3>
+  <p><code>ref</code> 是前驱的编号或类型。<code>by</code> 默认 <code>'id'</code>，也可写 <code>'type'</code>。当前全部按编号。前驱必须已经出现在 <code>build</code> 展开出的图里。</p>
+
+  <h3>十四件任务的当前参数</h3>
+  <table>
+    <thead>
+      <tr><th>编号</th><th>类型</th><th>可靠性</th><th>角色与阈值</th><th>结束位置</th><th>依赖</th></tr>
+    </thead>
+    <tbody>
+      <tr><td><code>T_dig_A</code></td><td><code>dig_a</code></td><td class="num">0.82</td><td>arm ≥ 0.80</td><td>arm → PIT_A</td><td>无</td></tr>
+      <tr><td><code>T_load_A</code></td><td><code>load_a</code></td><td class="num">0.82</td><td>transport:1 ≥ 0.65，transport:2 ≥ 0.65，arm ≥ 0.85</td><td>三台都到 PIT_A</td><td>T_dig_A</td></tr>
+      <tr><td><code>T_unload_A</code></td><td><code>unload_a</code></td><td class="num">0.82</td><td>transport:1 ≥ 0.65，transport:2 ≥ 0.65，arm ≥ 0.80</td><td>三台都到 GATE</td><td>T_load_A</td></tr>
+      <tr><td><code>T_load_nav_A</code></td><td><code>load_nav_a</code></td><td class="num">0.82</td><td>transport ≥ 0.80，arm ≥ 0.80</td><td>两台都到 GATE</td><td>T_unload_A</td></tr>
+      <tr><td><code>T_unload_nav_A</code></td><td><code>unload_nav_a</code></td><td class="num">0.82</td><td>transport ≥ 0.80，arm ≥ 0.80</td><td>两台都到 STACK</td><td>T_load_nav_A</td></tr>
+      <tr><td><code>T_grasp_A</code></td><td><code>grasp_a</code></td><td class="num">0.82</td><td>arm ≥ 0.80</td><td>arm → STACK</td><td>T_unload_nav_A</td></tr>
+      <tr><td><code>T_place_A</code></td><td><code>place_a</code></td><td class="num">0.82</td><td>arm ≥ 0.85</td><td>arm → STACK</td><td>T_grasp_A</td></tr>
+      <tr><td><code>T_dig_B</code></td><td><code>dig_b</code></td><td class="num">0.96</td><td>arm ≥ 0.78</td><td>arm → PIT_B</td><td>无</td></tr>
+      <tr><td><code>T_load_B</code></td><td><code>load_b</code></td><td class="num">0.96</td><td>transport ≥ 0.80，arm ≥ 0.78</td><td>两台都到 PIT_B</td><td>T_dig_B</td></tr>
+      <tr><td><code>T_unload_B</code></td><td><code>unload_b</code></td><td class="num">0.96</td><td>transport ≥ 0.80，arm ≥ 0.78</td><td>两台都到 STACK</td><td>T_load_B</td></tr>
+      <tr><td><code>T_grasp_B</code></td><td><code>grasp_b</code></td><td class="num">0.96</td><td>arm ≥ 0.80</td><td>arm → STACK</td><td>T_unload_B</td></tr>
+      <tr><td><code>T_place_B</code></td><td><code>place_b</code></td><td class="num">0.96</td><td>arm ≥ 0.80</td><td>arm → STACK</td><td>T_grasp_B，并且 T_place_A</td></tr>
+      <tr><td><code>T_grasp_C</code></td><td><code>grasp_c</code></td><td class="num">0.97</td><td>arm ≥ 0.85</td><td>arm → WAIT_C</td><td>无</td></tr>
+      <tr><td><code>T_place_C</code></td><td><code>place_c</code></td><td class="num">0.97</td><td>arm ≥ 0.85</td><td>arm → STACK</td><td>T_grasp_C，并且 T_place_B</td></tr>
+    </tbody>
+  </table>
+
+  <h3>每件任务的前置和后置</h3>
+  <p>电量增量是负数，模式为 <code>add</code>。信念和材质的模式为 <code>merge</code>。夹爪和装载量是覆盖。</p>
+  <table>
+    <thead><tr><th>任务</th><th>前置</th><th>后置里除位置以外的写入</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><code>dig_a</code></td>
+        <td>arm.bat ≥ 0.35</td>
+        <td>grip = 1；bat += -0.05；belief holding = raw_A</td>
+      </tr>
+      <tr>
+        <td><code>load_a</code></td>
+        <td>arm 与两台运输车两两 dist ≤ 1；两车 full ≤ 0；三台 bat ≥ 0.35</td>
+        <td>两车 full = 1；arm grip = 0；三台 bat += -0.05；两车 belief cargo = A</td>
+      </tr>
+      <tr>
+        <td><code>unload_a</code></td>
+        <td>arm 与两车 dist ≤ 1；两车 full ≥ 1；三台 bat ≥ 0.25</td>
+        <td>两车 full = 0；grip = 0；三台 bat += -0.05；两车 belief cargo = None</td>
+      </tr>
+      <tr>
+        <td><code>load_nav_a</code></td>
+        <td>arm 与运输车 dist ≤ 1；full ≤ 0；两台 bat ≥ 0.25</td>
+        <td>full = 1；grip = 0；两台 bat += -0.04；运输车 belief cargo = A</td>
+      </tr>
+      <tr>
+        <td><code>unload_nav_a</code></td>
+        <td>dist ≤ 1；full ≥ 1；两台 bat ≥ 0.20</td>
+        <td>full = 0；grip = 0；两台 bat += -0.04；belief cargo = None</td>
+      </tr>
+      <tr>
+        <td><code>grasp_a</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>grip = 1；bat += -0.03；belief holding = module_A</td>
+      </tr>
+      <tr>
+        <td><code>place_a</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>mat 合并 2,2,0 = module_A；occ 合并 2,2,0 = 1；grip = 0；bat += -0.04；belief placed_A = True</td>
+      </tr>
+      <tr>
+        <td><code>dig_b</code></td>
+        <td>arm.bat ≥ 0.30</td>
+        <td>grip = 1；bat += -0.03；belief holding = raw_B</td>
+      </tr>
+      <tr>
+        <td><code>load_b</code></td>
+        <td>dist ≤ 1；full ≤ 0；两台 bat ≥ 0.30</td>
+        <td>full = 1；grip = 0；两台 bat += -0.02；belief cargo = B</td>
+      </tr>
+      <tr>
+        <td><code>unload_b</code></td>
+        <td>dist ≤ 1；full ≥ 1；两台 bat ≥ 0.20</td>
+        <td>full = 0；grip = 0；两台 bat += -0.02；belief cargo = None</td>
+      </tr>
+      <tr>
+        <td><code>grasp_b</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>grip = 1；bat += -0.02；belief holding = module_B</td>
+      </tr>
+      <tr>
+        <td><code>place_b</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>mat 合并 2,2,0 = module_B；occ 合并 2,2,0 = 1；grip = 0；bat += -0.02；belief placed_B = True</td>
+      </tr>
+      <tr>
+        <td><code>grasp_c</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>grip = 1；bat += -0.02；belief holding = module_C</td>
+      </tr>
+      <tr>
+        <td><code>place_c</code></td>
+        <td>arm.bat ≥ 0.20</td>
+        <td>mat 合并 2,2,0 = module_C，以及 5,3,0 = empty；occ 合并 2,2,0 = 1；grip = 0；bat += -0.02；belief placed_C = True</td>
+      </tr>
+    </tbody>
+  </table>
+  <p><code>tasks_by_type</code> 由任务字典生成，键是 <code>ttype</code>。生成图展开和翻译都靠它找到 <code>TaskNode</code>。任务类型不能重复。</p>
+</section>
+
+<section id="operad">
+  <h2>生成图</h2>
+  <p><code>operad</code> 先登记基元，再登记生成规则，最后 <code>decompose</code> 得到 <code>trees</code>。求解只用 <code>trees['build']</code>。</p>
+  <h3>基元</h3>
+  <p>下面 14 个字符串必须已经是任务类型，并且不能是移动词：</p>
+  <p><code>dig_a dig_b load_a load_b unload_a unload_b load_nav_a unload_nav_a grasp_a grasp_b grasp_c place_a place_b place_c</code></p>
+  <h3>生成规则要填的参数</h3>
+  <table>
+    <thead><tr><th>参数</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>output</code></td><td>复杂任务的名字。不能与基元重名，不能是移动词，不能登记两次。</td></tr>
+      <tr><td><code>steps</code></td><td>有序名字。移动词会删掉。剩下的每一项必须是基元或已经登记的复杂任务。</td></tr>
+      <tr><td><code>deps</code></td><td>可选。去掉移动之后的下标对 <code>(i, j)</code>，表示第 i 个剩余任务先于第 j 个。不传时，剩余任务按顺序连成一条链。传 <code>[]</code> 时不连边，三条链路并行。下标按删除移动之后的列表计算，不是按原始 <code>steps</code> 计算。</td></tr>
+    </tbody>
+  </table>
+  <table>
+    <thead><tr><th>输出</th><th>写入的步骤</th><th>删掉移动后</th><th>依赖</th></tr></thead>
+    <tbody>
+      <tr><td><code>carve_a</code></td><td>move, dig_a, move</td><td>dig_a</td><td>缺省，只有一项</td></tr>
+      <tr><td><code>ship_a</code></td><td>load_a, move, deliver, move, unload_a</td><td>load_a → unload_a</td><td>缺省成链。deliver 不入库。</td></tr>
+      <tr><td><code>navigate_a</code></td><td>load_nav_a, move, nav, move, unload_nav_a</td><td>load_nav_a → unload_nav_a</td><td>缺省成链。nav 不入库。</td></tr>
+      <tr><td><code>assemble_a</code></td><td>move_ang, grasp_a, move_ang, place_a, move_ang</td><td>grasp_a → place_a</td><td>缺省成链</td></tr>
+      <tr><td><code>build_a</code></td><td>carve_a, ship_a, navigate_a, assemble_a</td><td>四段顺序相接</td><td>缺省成链</td></tr>
+      <tr><td><code>carve_b</code></td><td>move, dig_b, move</td><td>dig_b</td><td>缺省</td></tr>
+      <tr><td><code>ship_b</code></td><td>load_b, move, deliver, move, unload_b</td><td>load_b → unload_b</td><td>缺省成链</td></tr>
+      <tr><td><code>assemble_b</code></td><td>move_ang, grasp_b, move_ang, place_b, move_ang</td><td>grasp_b → place_b</td><td>缺省成链</td></tr>
+      <tr><td><code>build_b</code></td><td>carve_b, ship_b, assemble_b</td><td>三段顺序相接</td><td>缺省成链。B 没有 navigate。</td></tr>
+      <tr><td><code>grasp_c_gen</code></td><td>move_ang, grasp_c, move_ang</td><td>grasp_c</td><td>缺省。名字不能也叫 grasp_c，那个名字已经是基元。</td></tr>
+      <tr><td><code>assemble_c</code></td><td>move_ang, place_c, move_ang</td><td>place_c</td><td>缺省</td></tr>
+      <tr><td><code>build_c</code></td><td>grasp_c_gen, assemble_c</td><td>grasp_c → place_c</td><td>缺省成链</td></tr>
+      <tr><td><code>build</code></td><td>build_a, build_b, build_c</td><td>三条链路都留下</td><td><code>deps=[]</code>，三条并行。不写 <code>deps</code> 的话它们会被串成一条链。</td></tr>
+    </tbody>
+  </table>
+  <p><code>trees</code> 的键就是上表这些输出名。每一项调用 <code>operad.decompose(name, tasks_by_type)</code>。</p>
+</section>
+
+<section id="translation">
+  <h2>翻译</h2>
+  <p><span class="tag keep">翻译</span>每个基元一条 <code>TaskTranslation</code>：任务类型、执行图、可选的环境效果。求解不读 <code>translator</code>。机型对不上会在 <code>translate</code> 时失败。</p>
+  <table>
+    <thead><tr><th>模式</th><th>用在</th><th>执行图里要写的动作</th><th>环境效果</th></tr></thead>
+    <tbody>
+      <tr><td><code>_dig</code></td><td>dig_a，dig_b</td><td>机械臂 <code>m1 → a3 → m2</code></td><td>无</td></tr>
+      <tr><td><code>_load</code></td><td>load_a，load_nav_a，load_b</td><td>运输车 <code>t2</code>；机械臂 <code>m1 → m2</code>；m2 连到 t2</td><td>无</td></tr>
+      <tr><td><code>_unload</code></td><td>unload_a，unload_nav_a，unload_b</td><td>与装载相同的图</td><td>无</td></tr>
+      <tr><td><code>_grasp</code></td><td>grasp_a，grasp_b，grasp_c</td><td>机械臂 <code>a3 → m1 → m2</code></td><td>无</td></tr>
+      <tr><td><code>_place</code></td><td>place_a，place_b，place_c</td><td>机械臂 <code>m1 → m2</code></td><td>见下表</td></tr>
+    </tbody>
+  </table>
+  <p>放置函数的三个参数：任务类型、<code>mat</code> 材质名、<code>pos_key</code> 栅格键。可选额外的 <code>PostEffect</code>，并且只能改环境。</p>
+  <table>
+    <thead><tr><th>调用</th><th>材质</th><th>栅格</th><th>额外</th></tr></thead>
+    <tbody>
+      <tr><td><code>place_a</code></td><td><code>module_A</code></td><td><code>2,2,0</code></td><td>无。同时写 occ = 1。</td></tr>
+      <tr><td><code>place_b</code></td><td><code>module_B</code></td><td><code>2,2,0</code></td><td>无。同时写 occ = 1。</td></tr>
+      <tr><td><code>place_c</code></td><td><code>module_C</code></td><td><code>2,2,0</code></td><td>再把 <code>5,3,0</code> 的材质合并为 <code>empty</code>。建造点 occ = 1。</td></tr>
+    </tbody>
+  </table>
+  <p><code>translated</code> 对 14 个基元各调用一次 <code>translator.translate</code>。这里不引入新的数。</p>
+</section>
+
+<section id="solver">
+  <h2>求解</h2>
+  <p>当前调用是 <code>TaskSolver(robots, env, trees['build'], seed=1)</code>，然后 <code>solve()</code>。先束搜索，再自适应大邻域搜索。目标是总接近行程。</p>
+  <table>
+    <thead><tr><th>参数</th><th>当前</th><th>默认</th><th>含义</th></tr></thead>
+    <tbody>
+      <tr><td><code>robots</code></td><td>上面的四台</td><td>无默认</td><td><span class="tag solve">求解</span>构造时深拷贝。搜索中的耗电和位移不改回应用文件里的原对象。</td></tr>
+      <tr><td><code>env</code></td><td>上面的环境</td><td>无默认</td><td><span class="tag solve">求解</span>深拷贝。后置材质和占用写在副本上。</td></tr>
+      <tr><td><code>graph</code></td><td><code>trees['build']</code></td><td>无默认</td><td><span class="tag solve">求解</span>必须是已经展开、并且每个基元都能找到任务的图。节点上的任务不能为空。</td></tr>
+      <tr><td><code>seed</code></td><td class="num">1</td><td class="num">0</td><td><span class="tag solve">求解</span>随机数种子。候选补足和退火都用它。换种子可能换到行程相同的另一组车。</td></tr>
+      <tr><td><code>beam_width</code></td><td>未写</td><td class="num">8</td><td>每一层保留的部分方案数。至少为 1。</td></tr>
+      <tr><td><code>robot_limit</code></td><td>未写</td><td class="num">4</td><td>每个角色最多尝试多少台合格机器人。至少为 1。当前每类合格车不超过 2 台，这个上限没有裁掉任何人。</td></tr>
+      <tr><td><code>iters</code></td><td>未写</td><td class="num">120</td><td>大邻域搜索迭代次数。至少为 1。</td></tr>
+      <tr><td><code>destroy_ratio</code></td><td>未写</td><td class="num">0.3</td><td>每次打乱的分配比例。</td></tr>
+      <tr><td><code>T0</code></td><td>未写</td><td class="num">8.0</td><td>模拟退火初温。</td></tr>
+      <tr><td><code>alpha</code></td><td>未写</td><td class="num">0.97</td><td>每步温度乘上的系数。</td></tr>
+    </tbody>
+  </table>
+  <div class="note">
+    <p>以 <code>seed=1</code> 求出现行方案时，行程是 544.67，方案可行。改位置、能力、阈值、槽、依赖或 <code>build</code> 的 <code>deps</code>，这个数和分配都会变。改动作字典、步骤可靠性、设施和通信，行程不变。</p>
+  </div>
+</section>
+
+</main>
+</body>
+</html>
