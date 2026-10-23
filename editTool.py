@@ -1,7 +1,7 @@
 """
 图形化编辑 hybridx_apply.py。
 
-按落点、机器人、动作、设施、通信、任务、生成图分页改表。
+每页是一张可以直接填写的表：落点、机器人、能力、动作、设施、通信、任务、生成图。
 保存前用 compile_case 装配检查，通过后仍按表格写回。
 """
 from __future__ import annotations
@@ -442,17 +442,24 @@ def launch() -> None:
     import tkinter as tk
     from tkinter import messagebox, ttk
 
+    font = ('Microsoft YaHei UI', 10)
     model = load_model()
     root = tk.Tk()
     root.title('HybridX 应用编辑器')
-    root.geometry('1180x760')
+    root.geometry('1360x820')
     root.minsize(980, 640)
 
     status = tk.StringVar(value=str(APPLY_PATH))
     seed_var = tk.StringVar(value=str(model['seed']))
+    refreshers = []
+    flushers = []
 
     def fail(exc: Exception) -> None:
         messagebox.showerror('无法保存', str(exc), parent=root)
+
+    def flush_all() -> None:
+        for flusher in flushers:
+            flusher()
 
     def reload_model() -> None:
         nonlocal model
@@ -504,663 +511,401 @@ def launch() -> None:
 
     book = ttk.Notebook(root)
     book.pack(fill='both', expand=True, padx=6, pady=6)
-    refreshers = []
-    flushers = []
 
-    def flush_all() -> None:
-        for flusher in flushers:
-            flusher()
-
-    def add_editor(title: str, builder) -> None:
+    def book_page(title: str):
         frame = ttk.Frame(book, padding=8)
         book.add(frame, text=title)
-        refresh, flush = builder(frame)
-        refreshers.append(refresh)
-        flushers.append(flush)
+        return frame
 
-    def section_list(parent, rows, label, on_select, on_add, on_delete):
-        left = ttk.Frame(parent)
-        left.pack(side='left', fill='y', padx=(0, 8))
-        ttk.Label(left, text=label).pack(anchor='w')
-        listing = tk.Listbox(left, width=28, exportselection=False, font=('Microsoft YaHei UI', 10))
-        listing.pack(fill='y', expand=True)
-        buttons = ttk.Frame(left)
-        buttons.pack(fill='x', pady=4)
-        ttk.Button(buttons, text='添加', command=on_add).pack(side='left')
-        ttk.Button(buttons, text='删除', command=on_delete).pack(side='left', padx=4)
-        busy = {'on': False}
+    class Sheet:
+        """一页可直接填写的表。columns 是 (标题, 宽度, 读出, 写入, 下拉选项或 None)。"""
 
-        def fill() -> None:
-            busy['on'] = True
-            keep = listing.curselection()
-            listing.delete(0, 'end')
-            for row in rows():
-                listing.insert('end', label_of(row))
-            if keep and keep[0] < listing.size():
-                listing.selection_clear(0, 'end')
-                listing.selection_set(keep[0])
-            busy['on'] = False
+        def __init__(self, parent, columns, blank, hint: str = ''):
+            self.columns = columns
+            self.blank = blank
+            self.rows: list = []
+            self.cells: list = []
+            outer = ttk.Frame(parent)
+            outer.pack(fill='both', expand=True)
+            if hint:
+                ttk.Label(outer, text=hint).pack(anchor='w', pady=(0, 4))
+            tools = ttk.Frame(outer)
+            tools.pack(fill='x', pady=(0, 4))
+            ttk.Button(tools, text='加一行', command=self.add).pack(side='left')
+            wrap = ttk.Frame(outer)
+            wrap.pack(fill='both', expand=True)
+            self.canvas = tk.Canvas(wrap, highlightthickness=0)
+            ybar = ttk.Scrollbar(wrap, orient='vertical', command=self.canvas.yview)
+            xbar = ttk.Scrollbar(wrap, orient='horizontal', command=self.canvas.xview)
+            self.canvas.configure(yscrollcommand=ybar.set, xscrollcommand=xbar.set)
+            ybar.pack(side='right', fill='y')
+            xbar.pack(side='bottom', fill='x')
+            self.canvas.pack(side='left', fill='both', expand=True)
+            self.body = ttk.Frame(self.canvas)
+            self.window = self.canvas.create_window((0, 0), window=self.body, anchor='nw')
+            self.body.bind('<Configure>', self._fit)
+            self.canvas.bind('<Enter>', self._arm_wheel)
+            self.canvas.bind('<Leave>', self._disarm_wheel)
 
-        def current():
-            sel = listing.curselection()
-            if not sel:
-                return None
-            return rows()[sel[0]]
+        def _fit(self, _event=None) -> None:
+            self.canvas.configure(scrollregion=self.canvas.bbox('all'))
 
-        def on_list(_event) -> None:
-            if busy['on']:
-                return
-            try:
-                on_select(current())
-            except Exception as exc:
-                messagebox.showerror('这一项还不能切换', str(exc), parent=root)
+        def _wheel(self, event) -> None:
+            self.canvas.yview_scroll(int(-event.delta / 120), 'units')
 
-        listing.bind('<<ListboxSelect>>', on_list)
-        return listing, fill, current
+        def _arm_wheel(self, _event) -> None:
+            self.canvas.bind_all('<MouseWheel>', self._wheel)
 
-    def label_of(row) -> str:
-        if 'rid' in row:
-            return f"{row['rid']}  {ROLE_NAME.get(row['rtype'], row['rtype'])}"
-        if 'tid' in row:
-            return f"{row['tid']}  {row['ttype']}"
-        if 'kind' in row and 'name' in row and 'left' in row:
-            return f"{row['name']}  {row['kind']}"
-        if 'kind' in row and 'name' in row and 'sites' in row:
-            return f"{row['name']}  {row['kind']}"
-        if 'min_crew' in row:
-            return row['name']
-        if 'steps' in row:
-            return row['name']
-        if 'mat' in row:
-            return row['name']
-        return str(row.get('name', row))
+        def _disarm_wheel(self, _event) -> None:
+            self.canvas.unbind_all('<MouseWheel>')
 
-    def ask(title, fields_spec):
-        dialog = tk.Toplevel(root)
-        dialog.title(title)
-        dialog.transient(root)
-        values = {}
-        for index, (key, caption, options) in enumerate(fields_spec):
-            ttk.Label(dialog, text=caption).grid(row=index, column=0, sticky='w', padx=8, pady=4)
-            var = tk.StringVar()
-            if options:
-                widget = ttk.Combobox(dialog, textvariable=var, values=options, state='readonly', width=28)
-                var.set(options[0])
-            else:
-                widget = ttk.Entry(dialog, textvariable=var, width=30)
-            widget.grid(row=index, column=1, padx=8, pady=4)
-            values[key] = var
-        chosen = {'ok': False}
+        def load(self, rows: list) -> None:
+            self.rows = rows
+            self.draw()
 
-        def accept() -> None:
-            chosen['ok'] = True
-            dialog.destroy()
+        def flush(self) -> None:
+            for row, widgets in zip(self.rows, self.cells):
+                for column, widget in zip(self.columns, widgets):
+                    column[3](row, widget.get())
 
-        ttk.Button(dialog, text='确定', command=accept).grid(row=len(fields_spec), column=1, sticky='e', padx=8, pady=8)
-        dialog.grab_set()
-        dialog.wait_window()
-        if not chosen['ok']:
-            return None
-        return {key: var.get().strip() for key, var in values.items()}
+        def draw(self) -> None:
+            for child in self.body.winfo_children():
+                child.destroy()
+            self.cells = []
+            for index, column in enumerate(self.columns):
+                ttk.Label(self.body, text=column[0]).grid(row=0, column=index + 1, sticky='w', padx=3, pady=(0, 4))
+            for row_index, row in enumerate(self.rows):
+                ttk.Button(
+                    self.body, text='删除', width=5,
+                    command=lambda index=row_index: self.remove(index),
+                ).grid(row=row_index + 1, column=0, padx=2, pady=1)
+                widgets = []
+                for col_index, column in enumerate(self.columns):
+                    var = tk.StringVar(value=column[2](row))
+                    options = column[4] if len(column) > 4 else None
+                    if options:
+                        widget = ttk.Combobox(
+                            self.body, textvariable=var, values=options, width=column[1], font=font,
+                        )
+                    else:
+                        widget = ttk.Entry(self.body, textvariable=var, width=column[1], font=font)
+                    widget.grid(row=row_index + 1, column=col_index + 1, padx=2, pady=1, sticky='ew')
+                    widgets.append(var)
+                self.cells.append(widgets)
+            self.body.update_idletasks()
+            self._fit()
 
-    def build_sites(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['sites'], '落点',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        fields = {key: tk.StringVar() for key in ('name', 'x', 'y', 'mat')}
-        shown = {'row': None}
-        captions = (('name', '名字'), ('x', 'x / 米'), ('y', 'y / 米'), ('mat', '材质，可空'))
-        for index, (key, caption) in enumerate(captions):
-            ttk.Label(form, text=caption).grid(row=index, column=0, sticky='w', pady=2)
-            ttk.Entry(form, textvariable=fields[key], width=24).grid(row=index, column=1, sticky='w')
-        ttk.Label(form, text='放置写到名为 stack 的落点。').grid(row=4, column=0, columnspan=2, sticky='w', pady=8)
+        def add(self) -> None:
+            self.flush()
+            self.rows.append(self.blank())
+            self.draw()
 
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            if row is None:
-                return
-            fields['name'].set(row['name'])
-            fields['x'].set(str(row['x']))
-            fields['y'].set(str(row['y']))
-            fields['mat'].set('' if row['mat'] is None else str(row['mat']))
+        def remove(self, index: int) -> None:
+            self.flush()
+            del self.rows[index]
+            self.draw()
 
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['sites']:
-                return
-            row['name'] = fields['name'].get().strip()
-            row['x'] = float(fields['x'].get())
-            row['y'] = float(fields['y'].get())
-            mat = fields['mat'].get().strip()
-            row['mat'] = None if not mat or mat in ('None', 'none') else mat
-            fill()
+    def text_of(value) -> str:
+        if value is None:
+            return ''
+        if isinstance(value, str):
+            return value
+        return py_obj(value)
 
-        def add() -> None:
-            flush()
-            model['sites'].append({'name': f'site_{len(model["sites"]) + 1}', 'x': 0.0, 'y': 0.0, 'mat': None})
-            fill()
-            listing.selection_set('end')
-            show(model['sites'][-1])
+    def set_text(row, key, text: str) -> None:
+        row[key] = text.strip()
 
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['sites'][sel[0]]
-            fill()
+    def set_float(row, key, text: str) -> None:
+        row[key] = float(text)
 
-        fill()
-        if model['sites']:
-            listing.selection_set(0)
-            show(model['sites'][0])
-        return fill, flush
+    def set_optional(row, key, text: str) -> None:
+        stripped = text.strip()
+        row[key] = None if stripped in ('', 'None', 'none') else stripped
 
-    def build_robots(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['robots'], '机器人',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        fields = {}
-        shown = {'row': None}
+    def bind(table, key: str) -> None:
+        refreshers.append(lambda table=table, key=key: table.load(model[key]))
+        flushers.append(table.flush)
 
-        def entry(caption, key, width=18):
-            ttk.Label(form, text=caption).grid(row=len(fields), column=0, sticky='w', pady=2)
-            var = tk.StringVar()
-            ttk.Entry(form, textvariable=var, width=width).grid(row=len(fields), column=1, sticky='w')
-            fields[key] = var
+    sites = Sheet(
+        book_page('落点'),
+        [
+            ('名字', 14, lambda r: r['name'], lambda r, t: set_text(r, 'name', t)),
+            ('x / 米', 10, lambda r: py_num(r['x']), lambda r, t: set_float(r, 'x', t)),
+            ('y / 米', 10, lambda r: py_num(r['y']), lambda r, t: set_float(r, 'y', t)),
+            ('材质', 14, lambda r: '' if r['mat'] is None else str(r['mat']), lambda r, t: set_optional(r, 'mat', t)),
+        ],
+        lambda: {'name': 'site', 'x': 0.0, 'y': 0.0, 'mat': None},
+        '材质留空表示这个格子不登记。放置写到名为 stack 的落点。',
+    )
+    sites.load(model['sites'])
+    bind(sites, 'sites')
 
-        entry('编号', 'rid')
-        ttk.Label(form, text='机型').grid(row=len(fields), column=0, sticky='w')
-        kind = tk.StringVar()
-        ttk.Combobox(form, textvariable=kind, values=ROLES, state='readonly', width=16).grid(row=len(fields), column=1, sticky='w')
-        fields['rtype'] = kind
-        for key, caption in (('x', 'x / 米'), ('y', 'y / 米'), ('theta_deg', '朝向 / 度'), ('bat', '电量')):
-            entry(caption, key)
-        ttk.Label(form, text='能力  类型 = 数值').grid(row=len(fields), column=0, sticky='nw', pady=(8, 0))
-        capability = tk.Text(form, width=42, height=12, font=('Consolas', 10))
-        capability.grid(row=len(fields), column=1, sticky='w', pady=(8, 0))
-        fields['capability'] = capability
+    robots = Sheet(
+        book_page('机器人'),
+        [
+            ('编号', 10, lambda r: r['rid'], lambda r, t: set_text(r, 'rid', t)),
+            ('机型', 12, lambda r: r['rtype'], lambda r, t: set_text(r, 'rtype', t), ROLES),
+            ('x / 米', 10, lambda r: py_num(r['x']), lambda r, t: set_float(r, 'x', t)),
+            ('y / 米', 10, lambda r: py_num(r['y']), lambda r, t: set_float(r, 'y', t)),
+            ('朝向 / 度', 10, lambda r: py_num(r['theta_deg']), lambda r, t: set_float(r, 'theta_deg', t)),
+            ('电量', 8, lambda r: py_num(r['bat']), lambda r, t: set_float(r, 'bat', t)),
+        ],
+        lambda: {'rid': 'R', 'rtype': 'transport', 'x': 0.0, 'y': 0.0, 'theta_deg': 0.0, 'bat': 1.0, 'capability': []},
+        '朝向用角度。能力在下一页按任务类型填写，空格表示不会做。',
+    )
+    robots.load(model['robots'])
+    bind(robots, 'robots')
 
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            if row is None:
-                return
-            for key in ('rid', 'rtype', 'x', 'y', 'theta_deg', 'bat'):
-                fields[key].set(str(row[key]))
-            capability.delete('1.0', 'end')
-            capability.insert('1.0', format_map(row['capability']))
+    caps_page = book_page('能力')
+    caps_hint = ttk.Label(caps_page, text='行是机器人，列是任务类型。格子里填 0 到 1 的能力，留空表示不会做这件任务。')
+    caps_hint.pack(anchor='w', pady=(0, 4))
+    caps_wrap = ttk.Frame(caps_page)
+    caps_wrap.pack(fill='both', expand=True)
+    caps_canvas = tk.Canvas(caps_wrap, highlightthickness=0)
+    caps_y = ttk.Scrollbar(caps_wrap, orient='vertical', command=caps_canvas.yview)
+    caps_x = ttk.Scrollbar(caps_wrap, orient='horizontal', command=caps_canvas.xview)
+    caps_canvas.configure(yscrollcommand=caps_y.set, xscrollcommand=caps_x.set)
+    caps_y.pack(side='right', fill='y')
+    caps_x.pack(side='bottom', fill='x')
+    caps_canvas.pack(side='left', fill='both', expand=True)
+    caps_body = ttk.Frame(caps_canvas)
+    caps_canvas.create_window((0, 0), window=caps_body, anchor='nw')
+    caps_body.bind('<Configure>', lambda _e: caps_canvas.configure(scrollregion=caps_canvas.bbox('all')))
+    caps_state = {'vars': [], 'rids': [], 'types': []}
 
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['robots']:
-                return
-            row['rid'] = fields['rid'].get().strip()
-            row['rtype'] = fields['rtype'].get().strip()
-            for key in ('x', 'y', 'theta_deg', 'bat'):
-                row[key] = float(fields[key].get())
-            row['capability'] = [(key, float(value)) for key, value in parse_map(capability.get('1.0', 'end'))]
-            fill()
+    def task_types() -> list[str]:
+        found = []
+        for row in model['tasks']:
+            if row['ttype'] and row['ttype'] not in found:
+                found.append(row['ttype'])
+        return found
 
-        def add() -> None:
-            flush()
-            model['robots'].append({
-                'rid': f'R{len(model["robots"]) + 1}',
-                'rtype': 'transport',
-                'x': 0.0, 'y': 0.0, 'theta_deg': 0.0, 'bat': 1.0,
-                'capability': [],
+    def draw_caps() -> None:
+        for child in caps_body.winfo_children():
+            child.destroy()
+        types = task_types()
+        caps_state['types'] = types
+        caps_state['rids'] = [row['rid'] for row in model['robots']]
+        caps_state['vars'] = []
+        ttk.Label(caps_body, text='机器人').grid(row=0, column=0, sticky='w', padx=3, pady=(0, 4))
+        for index, ttype in enumerate(types):
+            ttk.Label(caps_body, text=ttype).grid(row=0, column=index + 1, sticky='w', padx=3, pady=(0, 4))
+        for row_index, robot in enumerate(model['robots']):
+            known = dict(robot['capability'])
+            ttk.Label(caps_body, text=robot['rid']).grid(row=row_index + 1, column=0, sticky='w', padx=3, pady=1)
+            row_vars = []
+            for col_index, ttype in enumerate(types):
+                value = known.get(ttype, '')
+                var = tk.StringVar(value='' if value == '' else py_num(float(value)))
+                ttk.Entry(caps_body, textvariable=var, width=8, font=font).grid(
+                    row=row_index + 1, column=col_index + 1, padx=2, pady=1,
+                )
+                row_vars.append(var)
+            caps_state['vars'].append(row_vars)
+
+    def flush_caps() -> None:
+        by_rid = {row['rid']: row for row in model['robots']}
+        for rid, row_vars in zip(caps_state['rids'], caps_state['vars']):
+            robot = by_rid.get(rid)
+            if robot is None:
+                continue
+            items = []
+            for ttype, var in zip(caps_state['types'], row_vars):
+                text = var.get().strip()
+                if text:
+                    items.append((ttype, float(text)))
+            robot['capability'] = items
+
+    draw_caps()
+    refreshers.append(draw_caps)
+    flushers.append(flush_caps)
+
+    def action_write(key):
+        def write(row, text: str) -> None:
+            row[key] = parse_literal(text)
+        return write
+
+    actions = Sheet(
+        book_page('动作'),
+        [
+            ('名称', 16, lambda r: r['name'], lambda r, t: set_text(r, 'name', t)),
+            ('种类', 8, lambda r: r['kind'], lambda r, t: set_text(r, 'kind', t), ACTION_KINDS),
+            ('左参数', 22, lambda r: text_of(r['left']), action_write('left')),
+            ('右参数', 22, lambda r: text_of(r['right']), action_write('right')),
+        ],
+        lambda: {'name': 'a_new', 'kind': 'a1', 'left': 0.01, 'right': None},
+        '点可以填落点名，或 (x, y)。a1、m2、t2 的右参数留空。求解不读这张表。',
+    )
+    actions.load(model['actions'])
+    bind(actions, 'actions')
+
+    def sites_write(row, text: str) -> None:
+        row['sites'] = [part.strip() for part in text.split(',') if part.strip()]
+
+    facilities = Sheet(
+        book_page('设施'),
+        [
+            ('名字', 14, lambda r: r['name'], lambda r, t: set_text(r, 'name', t)),
+            ('种类', 10, lambda r: r['kind'], lambda r, t: set_text(r, 'kind', t), FACILITY_KINDS),
+            ('可靠性', 8, lambda r: py_num(r['reliability']), lambda r, t: set_float(r, 'reliability', t)),
+            ('盖住的落点', 28, lambda r: ', '.join(r['sites']), sites_write),
+        ],
+        lambda: {'name': 'fac', 'kind': 'camera', 'reliability': 0.8, 'sites': ['gate', 'stack']},
+        '落点用逗号分隔。一段移动的两端都在里面，这条设施才作用在该段上。',
+    )
+    facilities.load(model['facilities'])
+    bind(facilities, 'facilities')
+
+    comms = Sheet(
+        book_page('通信'),
+        [
+            ('名字', 14, lambda r: r['name'], lambda r, t: set_text(r, 'name', t)),
+            ('可靠性', 8, lambda r: py_num(r['reliability']), lambda r, t: set_float(r, 'reliability', t)),
+            ('至少几台', 10, lambda r: str(r['min_crew']), lambda r, t: r.__setitem__('min_crew', int(t))),
+        ],
+        lambda: {'name': 'link', 'reliability': 0.8, 'min_crew': 2},
+        '至少两台机器人同时在场时，这条链路才参与。同一任务上的多条链路互为备用。',
+    )
+    comms.load(model['comms'])
+    bind(comms, 'comms')
+
+    task_page = book_page('任务')
+    role_tools = ttk.Frame(task_page)
+    role_tools.pack(fill='x', pady=(0, 4))
+    task_groups = {'n': max([3, *(len(row['roles']) for row in model['tasks'])] or [3])}
+
+    def task_columns(groups: int):
+        columns = [
+            ('编号', 12, lambda r: r['tid'], lambda r, t: set_text(r, 'tid', t)),
+            ('类型', 14, lambda r: r['ttype'], lambda r, t: set_text(r, 'ttype', t)),
+            ('可靠性', 8, lambda r: py_num(r['reliability']), lambda r, t: set_float(r, 'reliability', t)),
+            ('结束落点', 12, lambda r: r['site'], lambda r, t: set_text(r, 'site', t)),
+            ('电量门槛', 8, lambda r: py_num(r['bat_need']), lambda r, t: set_float(r, 'bat_need', t)),
+            ('耗电', 8, lambda r: py_num(r['bat_cost']), lambda r, t: set_float(r, 'bat_cost', t)),
+            ('依赖', 22, lambda r: ', '.join(r['deps']), lambda r, t: r.__setitem__('deps', [part.strip() for part in t.split(',') if part.strip()])),
+            ('清空落点', 12, lambda r: '' if not r['clear'] else str(r['clear']), lambda r, t: set_optional(r, 'clear', t)),
+        ]
+        for index in range(groups):
+            def role(row, index=index):
+                if index >= len(row['roles']):
+                    return {'rtype': '', 'slot': '', 'capability': ''}
+                item = row['roles'][index]
+                return item
+
+            columns.append((
+                f'机型{index + 1}', 12,
+                lambda r, index=index: role(r, index)['rtype'],
+                lambda r, t, index=index: role_field(r, index, 'rtype', t.strip()),
+                ('',) + ROLES,
+            ))
+            columns.append((
+                f'槽{index + 1}', 6,
+                lambda r, index=index: role(r, index).get('slot') or '',
+                lambda r, t, index=index: role_field(r, index, 'slot', t.strip()),
+            ))
+            columns.append((
+                f'阈值{index + 1}', 8,
+                lambda r, index=index: '' if role(r, index)['capability'] == '' else py_num(float(role(r, index)['capability'])),
+                lambda r, t, index=index: role_field(r, index, 'capability', '' if not t.strip() else float(t)),
+            ))
+        return columns
+
+    def role_field(row, index: int, key: str, value) -> None:
+        while len(row['roles']) <= index:
+            row['roles'].append({'rtype': '', 'slot': '', 'capability': ''})
+        row['roles'][index][key] = value
+
+    def compact_roles(row) -> None:
+        kept = []
+        for item in row['roles']:
+            if not str(item.get('rtype') or '').strip():
+                continue
+            kept.append({
+                'rtype': item['rtype'],
+                'slot': item.get('slot') or '',
+                'capability': float(item['capability']),
             })
-            fill()
-            listing.selection_set('end')
-            show(model['robots'][-1])
+        row['roles'] = kept
 
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['robots'][sel[0]]
-            fill()
+    tasks = Sheet(
+        task_page,
+        task_columns(task_groups['n']),
+        lambda: {
+            'tid': 'T_new', 'ttype': 'dig_x', 'reliability': 1.0, 'site': 'stack',
+            'bat_need': 0.2, 'bat_cost': 0.02, 'deps': [], 'clear': None,
+            'roles': [{'rtype': 'arm', 'slot': '', 'capability': 0.8}],
+        },
+        '类型以 dig、load、unload、grasp、place 开头。依赖填任务编号，逗号分隔。槽 1 和 2 表示两台运输车。',
+    )
 
-        fill()
-        if model['robots']:
-            listing.selection_set(0)
-            show(model['robots'][0])
-        return fill, flush
+    def flush_tasks() -> None:
+        tasks.flush()
+        for row in model['tasks']:
+            compact_roles(row)
 
-    def build_actions(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['actions'], '动作',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        name = tk.StringVar()
-        kind = tk.StringVar()
-        left = tk.StringVar()
-        right = tk.StringVar()
-        shown = {'row': None}
-        ttk.Label(form, text='名称').grid(row=0, column=0, sticky='w')
-        ttk.Entry(form, textvariable=name, width=24).grid(row=0, column=1, sticky='w')
-        ttk.Label(form, text='种类').grid(row=1, column=0, sticky='w')
-        ttk.Combobox(form, textvariable=kind, values=ACTION_KINDS, state='readonly', width=12).grid(row=1, column=1, sticky='w')
-        ttk.Label(form, text='左参数').grid(row=2, column=0, sticky='w')
-        ttk.Entry(form, textvariable=left, width=36).grid(row=2, column=1, sticky='w')
-        ttk.Label(form, text='右参数').grid(row=3, column=0, sticky='w')
-        ttk.Entry(form, textvariable=right, width=36).grid(row=3, column=1, sticky='w')
-        ttk.Label(
-            form,
-            text='点写落点名或 (x, y)。a1/t2 只填左参数。空的右参数存成 None。',
-        ).grid(row=4, column=0, columnspan=2, sticky='w', pady=8)
+    def reload_tasks() -> None:
+        task_groups['n'] = max([task_groups['n'], 3, *(len(row['roles']) for row in model['tasks'])] or [3])
+        tasks.columns = task_columns(task_groups['n'])
+        tasks.load(model['tasks'])
 
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            if row is None:
-                return
-            name.set(row['name'])
-            kind.set(row['kind'])
-            left.set('' if row['left'] is None else py_obj(row['left']) if not isinstance(row['left'], str) else row['left'])
-            right.set('' if row['right'] is None else py_obj(row['right']) if not isinstance(row['right'], str) else row['right'])
+    def add_role_group() -> None:
+        flush_tasks()
+        task_groups['n'] += 1
+        tasks.columns = task_columns(task_groups['n'])
+        tasks.draw()
 
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['actions']:
-                return
-            row['name'] = name.get().strip()
-            row['kind'] = kind.get()
-            row['left'] = parse_literal(left.get())
-            row['right'] = parse_literal(right.get())
-            fill()
+    ttk.Button(role_tools, text='加一组角色', command=add_role_group).pack(anchor='w')
+    tasks.load(model['tasks'])
+    refreshers.append(reload_tasks)
+    flushers.append(flush_tasks)
 
-        def add() -> None:
-            flush()
-            model['actions'].append({'name': 'a_new', 'kind': 'a1', 'left': 0.01, 'right': None})
-            fill()
-            listing.selection_set('end')
-            show(model['actions'][-1])
+    def steps_write(row, text: str) -> None:
+        row['steps'] = [part.strip() for part in text.split(',') if part.strip()]
 
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['actions'][sel[0]]
-            fill()
+    def deps_text(row) -> str:
+        if row['deps'] is None:
+            return ''
+        if row['deps'] == []:
+            return '并行'
+        return ', '.join(f'{left}-{right}' for left, right in row['deps'])
 
-        fill()
-        if model['actions']:
-            listing.selection_set(0)
-            show(model['actions'][0])
-        return fill, flush
+    def deps_write(row, text: str) -> None:
+        stripped = text.strip()
+        if not stripped:
+            row['deps'] = None
+            return
+        if stripped in ('并行', '()'):
+            row['deps'] = []
+            return
+        pairs = []
+        for part in stripped.split(','):
+            left, right = part.strip().split('-')
+            pairs.append((int(left), int(right)))
+        row['deps'] = pairs
 
-    def build_facilities(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['facilities'], '设施',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        name = tk.StringVar()
-        kind = tk.StringVar()
-        reliability = tk.StringVar()
-        sites = tk.StringVar()
-        shown = {'row': None}
-        ttk.Label(form, text='名字').grid(row=0, column=0, sticky='w')
-        ttk.Entry(form, textvariable=name, width=24).grid(row=0, column=1, sticky='w')
-        ttk.Label(form, text='种类').grid(row=1, column=0, sticky='w')
-        ttk.Combobox(form, textvariable=kind, values=FACILITY_KINDS, state='readonly', width=12).grid(row=1, column=1, sticky='w')
-        ttk.Label(form, text='可靠性').grid(row=2, column=0, sticky='w')
-        ttk.Entry(form, textvariable=reliability, width=12).grid(row=2, column=1, sticky='w')
-        ttk.Label(form, text='落点，逗号分隔').grid(row=3, column=0, sticky='w')
-        ttk.Entry(form, textvariable=sites, width=36).grid(row=3, column=1, sticky='w')
+    generators = Sheet(
+        book_page('生成图'),
+        [
+            ('名称', 16, lambda r: r['name'], lambda r, t: set_text(r, 'name', t)),
+            ('步骤', 52, lambda r: ', '.join(r['steps']), steps_write),
+            ('依赖', 18, deps_text, deps_write),
+        ],
+        lambda: {'name': 'rule', 'steps': [], 'deps': None},
+        '步骤用逗号分隔，移动词会保留。依赖留空是按顺序连成链，填“并行”则各步互不连接，也可填 0-1, 1-2。',
+    )
+    generators.load(model['generators'])
+    bind(generators, 'generators')
 
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            if row is None:
-                return
-            name.set(row['name'])
-            kind.set(row['kind'])
-            reliability.set(str(row['reliability']))
-            sites.set(', '.join(row['sites']))
+    def on_tab(_event=None) -> None:
+        try:
+            flush_all()
+        except Exception as exc:
+            fail(exc)
+            return
+        if book.tab(book.select(), 'text') == '能力':
+            draw_caps()
 
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['facilities']:
-                return
-            row['name'] = name.get().strip()
-            row['kind'] = kind.get()
-            row['reliability'] = float(reliability.get())
-            row['sites'] = [part.strip() for part in sites.get().split(',') if part.strip()]
-            fill()
-
-        def add() -> None:
-            flush()
-            names = [item['name'] for item in model['sites'][:2]] or ['gate', 'stack']
-            model['facilities'].append({
-                'name': f'fac_{len(model["facilities"]) + 1}',
-                'kind': 'camera',
-                'reliability': 0.8,
-                'sites': names,
-            })
-            fill()
-            listing.selection_set('end')
-            show(model['facilities'][-1])
-
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['facilities'][sel[0]]
-            fill()
-
-        fill()
-        if model['facilities']:
-            listing.selection_set(0)
-            show(model['facilities'][0])
-        return fill, flush
-
-    def build_comms(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['comms'], '通信',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        name = tk.StringVar()
-        reliability = tk.StringVar()
-        min_crew = tk.StringVar()
-        shown = {'row': None}
-        ttk.Label(form, text='名字').grid(row=0, column=0, sticky='w')
-        ttk.Entry(form, textvariable=name, width=24).grid(row=0, column=1, sticky='w')
-        ttk.Label(form, text='可靠性').grid(row=1, column=0, sticky='w')
-        ttk.Entry(form, textvariable=reliability, width=12).grid(row=1, column=1, sticky='w')
-        ttk.Label(form, text='至少几台').grid(row=2, column=0, sticky='w')
-        ttk.Entry(form, textvariable=min_crew, width=12).grid(row=2, column=1, sticky='w')
-
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            if row is None:
-                return
-            name.set(row['name'])
-            reliability.set(str(row['reliability']))
-            min_crew.set(str(row['min_crew']))
-
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['comms']:
-                return
-            row['name'] = name.get().strip()
-            row['reliability'] = float(reliability.get())
-            row['min_crew'] = int(min_crew.get())
-            fill()
-
-        def add() -> None:
-            flush()
-            model['comms'].append({'name': f'link_{len(model["comms"]) + 1}', 'reliability': 0.8, 'min_crew': 2})
-            fill()
-            listing.selection_set('end')
-            show(model['comms'][-1])
-
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['comms'][sel[0]]
-            fill()
-
-        fill()
-        if model['comms']:
-            listing.selection_set(0)
-            show(model['comms'][0])
-        return fill, flush
-
-    def build_tasks(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['tasks'], '任务',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        fields = {key: tk.StringVar() for key in (
-            'tid', 'ttype', 'reliability', 'site', 'bat_need', 'bat_cost', 'deps', 'clear',
-        )}
-        shown = {'row': None}
-        captions = (
-            ('tid', '编号'), ('ttype', '类型'), ('reliability', '可靠性'),
-            ('site', '结束落点'), ('bat_need', '电量门槛'), ('bat_cost', '耗电'),
-            ('deps', '依赖编号，逗号分隔'), ('clear', '清空的落点，可空'),
-        )
-        for index, (key, caption) in enumerate(captions):
-            ttk.Label(form, text=caption).grid(row=index, column=0, sticky='w', pady=2)
-            ttk.Entry(form, textvariable=fields[key], width=32).grid(row=index, column=1, sticky='w')
-        ttk.Label(form, text='角色').grid(row=8, column=0, sticky='nw', pady=(8, 0))
-        roles = tk.Listbox(form, height=8, width=42, exportselection=False, font=('Consolas', 10))
-        roles.grid(row=8, column=1, sticky='w', pady=(8, 0))
-        role_bar = ttk.Frame(form)
-        role_bar.grid(row=9, column=1, sticky='w', pady=4)
-
-        def role_text(item) -> str:
-            slot = item.get('slot') or ''
-            mark = slot if slot else '（无槽）'
-            return f"{ROLE_NAME.get(item['rtype'], item['rtype'])} {mark}  {item['capability']}"
-
-        def show_roles(row) -> None:
-            roles.delete(0, 'end')
-            for item in row['roles']:
-                roles.insert('end', role_text(item))
-
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            roles.delete(0, 'end')
-            if row is None:
-                return
-            fields['tid'].set(row['tid'])
-            fields['ttype'].set(row['ttype'])
-            fields['reliability'].set(str(row['reliability']))
-            fields['site'].set(row['site'])
-            fields['bat_need'].set(str(row['bat_need']))
-            fields['bat_cost'].set(str(row['bat_cost']))
-            fields['deps'].set(', '.join(row['deps']))
-            fields['clear'].set('' if not row['clear'] else str(row['clear']))
-            show_roles(row)
-
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['tasks']:
-                return
-            row['tid'] = fields['tid'].get().strip()
-            row['ttype'] = fields['ttype'].get().strip()
-            row['reliability'] = float(fields['reliability'].get())
-            row['site'] = fields['site'].get().strip()
-            row['bat_need'] = float(fields['bat_need'].get())
-            row['bat_cost'] = float(fields['bat_cost'].get())
-            row['deps'] = [part.strip() for part in fields['deps'].get().split(',') if part.strip()]
-            clear = fields['clear'].get().strip()
-            row['clear'] = None if not clear or clear in ('None', 'none') else clear
-            fill()
-
-        def add() -> None:
-            flush()
-            site = model['sites'][0]['name'] if model['sites'] else 'stack'
-            model['tasks'].append({
-                'tid': f'T_new_{len(model["tasks"]) + 1}',
-                'ttype': 'dig_x',
-                'reliability': 1.0,
-                'site': site,
-                'bat_need': 0.2,
-                'bat_cost': 0.02,
-                'deps': [],
-                'roles': [{'rtype': 'arm', 'slot': '', 'capability': 0.8}],
-                'clear': None,
-            })
-            fill()
-            listing.selection_set('end')
-            show(model['tasks'][-1])
-
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['tasks'][sel[0]]
-            fill()
-
-        def add_role() -> None:
-            row = shown['row']
-            if row is None:
-                return
-            got = ask('添加角色', [
-                ('rtype', '机型', ROLES),
-                ('capability', '能力阈值', None),
-                ('slot', '槽，可空', None),
-            ])
-            if not got:
-                return
-            row['roles'].append({
-                'rtype': got['rtype'],
-                'slot': got['slot'],
-                'capability': float(got['capability']),
-            })
-            show_roles(row)
-
-        def delete_role() -> None:
-            row = shown['row']
-            sel = roles.curselection()
-            if row is None or not sel:
-                return
-            del row['roles'][sel[0]]
-            show_roles(row)
-
-        ttk.Button(role_bar, text='加角色', command=add_role).pack(side='left')
-        ttk.Button(role_bar, text='删角色', command=delete_role).pack(side='left', padx=4)
-
-        fill()
-        if model['tasks']:
-            listing.selection_set(0)
-            show(model['tasks'][0])
-        return fill, flush
-
-    def build_operad(parent):
-        listing, fill, current = section_list(
-            parent, lambda: model['generators'], '生成规则',
-            lambda row: show(row), lambda: add(), lambda: delete(),
-        )
-        form = ttk.Frame(parent)
-        form.pack(side='left', fill='both', expand=True)
-        name = tk.StringVar()
-        deps = tk.StringVar()
-        parallel = tk.BooleanVar()
-        steps = tk.Listbox(form, height=10, font=('Consolas', 10), exportselection=False)
-        step_var = tk.StringVar()
-        shown = {'row': None}
-        ttk.Label(form, text='名称').grid(row=0, column=0, sticky='w')
-        ttk.Entry(form, textvariable=name, width=24).grid(row=0, column=1, sticky='w')
-        ttk.Label(form, text='步骤').grid(row=1, column=0, sticky='nw')
-        steps.grid(row=1, column=1, sticky='w')
-        step_bar = ttk.Frame(form)
-        step_bar.grid(row=2, column=1, sticky='w', pady=4)
-        ttk.Entry(step_bar, textvariable=step_var, width=16).pack(side='left')
-        ttk.Button(step_bar, text='加入', command=lambda: add_step()).pack(side='left', padx=4)
-        ttk.Button(step_bar, text='移除', command=lambda: remove_step()).pack(side='left')
-        ttk.Checkbutton(form, text='步骤之间不连边（并行）', variable=parallel).grid(row=3, column=1, sticky='w')
-        ttk.Label(form, text='去掉移动后的下标，如 0-1, 1-2').grid(row=4, column=0, sticky='w')
-        ttk.Entry(form, textvariable=deps, width=28).grid(row=4, column=1, sticky='w')
-        ttk.Label(
-            form,
-            text='留空且不勾选并行时，相邻步骤连成一条链。' + '、'.join(MOVE_NAMES) + ' 会在装配时去掉。基元来自任务类型。',
-        ).grid(row=5, column=0, columnspan=2, sticky='w', pady=6)
-
-        def show(row) -> None:
-            flush()
-            shown['row'] = row
-            steps.delete(0, 'end')
-            if row is None:
-                return
-            name.set(row['name'])
-            parallel.set(row['deps'] == [])
-            if row['deps']:
-                deps.set(', '.join(f'{a}-{b}' for a, b in row['deps']))
-            else:
-                deps.set('')
-            for step in row['steps']:
-                steps.insert('end', step)
-
-        def parse_deps(text: str):
-            pairs = []
-            for part in text.split(','):
-                part = part.strip()
-                if not part:
-                    continue
-                left, right = part.split('-')
-                pairs.append((int(left), int(right)))
-            return pairs
-
-        def flush() -> None:
-            row = shown['row']
-            if row is None or row not in model['generators']:
-                return
-            row['name'] = name.get().strip()
-            row['steps'] = list(steps.get(0, 'end'))
-            if parallel.get():
-                row['deps'] = []
-            elif deps.get().strip():
-                row['deps'] = parse_deps(deps.get())
-            else:
-                row['deps'] = None
-            fill()
-
-        def add_step() -> None:
-            text = step_var.get().strip()
-            if text:
-                steps.insert('end', text)
-                step_var.set('')
-
-        def remove_step() -> None:
-            sel = steps.curselection()
-            if sel:
-                steps.delete(sel[0])
-
-        def add() -> None:
-            flush()
-            model['generators'].append({'name': f'rule_{len(model["generators"]) + 1}', 'steps': [], 'deps': None})
-            fill()
-            listing.selection_set('end')
-            show(model['generators'][-1])
-
-        def delete() -> None:
-            sel = listing.curselection()
-            if not sel:
-                return
-            shown['row'] = None
-            del model['generators'][sel[0]]
-            fill()
-
-        fill()
-        if model['generators']:
-            listing.selection_set(0)
-            show(model['generators'][0])
-        return fill, flush
-
-    add_editor('落点', build_sites)
-    add_editor('机器人', build_robots)
-    add_editor('动作', build_actions)
-    add_editor('设施', build_facilities)
-    add_editor('通信', build_comms)
-    add_editor('任务', build_tasks)
-    add_editor('生成图', build_operad)
+    book.bind('<<NotebookTabChanged>>', on_tab)
 
     closed = {'done': False}
 
@@ -1168,6 +913,10 @@ def launch() -> None:
         if closed['done']:
             return
         closed['done'] = True
+        try:
+            root.unbind_all('<MouseWheel>')
+        except tk.TclError:
+            pass
         root.quit()
         try:
             root.destroy()
@@ -1177,7 +926,12 @@ def launch() -> None:
     root.protocol('WM_DELETE_WINDOW', close)
     root.bind('<Escape>', lambda _event: close())
     if os.environ.get('EDITTOOL_SMOKE'):
-        root.after(400, close)
+        def smoke() -> None:
+            flush_all()
+            validate(model)
+            close()
+
+        root.after(300, smoke)
     root.mainloop()
 
 
